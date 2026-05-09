@@ -1,0 +1,76 @@
+# Worker Deployment - 水平扩展
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: report-agent
+spec:
+  replicas: 5  # 初始副本数
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: report-agent:2.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - celery
+        - -A
+        - tasks
+        - worker
+        - --loglevel=info
+        - --concurrency=4
+        envFrom:
+        - configMapRef:
+            name: report-agent-config
+        - secretRef:
+            name: report-agent-secrets
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+          limits:
+            cpu: "4000m"
+            memory: "8Gi"
+        volumeMounts:
+        - name: outputs
+          mountPath: /app/outputs
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: outputs
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+---
+# Worker HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-hpa
+  namespace: report-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 5
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

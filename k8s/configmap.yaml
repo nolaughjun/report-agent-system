@@ -1,0 +1,29 @@
+# Kubernetes ConfigMap - 应用配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: report-agent-config
+  namespace: report-agent
+data:
+  # 应用配置
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  PORT: "8000"
+
+  # Redis 配置
+  REDIS_URL: "redis://redis:6379/0"
+
+  # 数据库配置
+  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/report_db"
+
+  # 模型配置
+  DEFAULT_LLM_MODEL: "deepseek-chat"
+  DEFAULT_DATA_SOURCE: "tavily"
+
+  # 缓存配置
+  SEARCH_CACHE_TTL: "3600"
+  LLM_CACHE_TTL: "7200"
+
+  # 限流配置
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_REQUESTS: "60"

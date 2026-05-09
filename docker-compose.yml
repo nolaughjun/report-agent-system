@@ -1,0 +1,248 @@
+version: '3.8'
+
+services:
+  # ══════════════════════════════════════════════════════════════
+  # PostgreSQL 数据库 - 数据持久化
+  # ══════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:15-alpine
+    container_name: report-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=report_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - report-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # ══════════════════════════════════════════════════════════════
+  # Redis 服务 - 状态存储、任务队列、缓存
+  # ══════════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: report-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - report-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # ══════════════════════════════════════════════════════════════
+  # API 服务 - FastAPI（支持多实例）
+  # ══════════════════════════════════════════════════════════════
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: report-agent:2.0
+    restart: unless-stopped
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - PORT=8000
+      # Redis 配置
+      - REDIS_URL=redis://redis:6379/0
+      # 数据库配置
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/report_db
+      # LLM 配置
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # 数据源配置
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # 模型配置
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-deepseek-chat}
+      - DEFAULT_DATA_SOURCE=${DEFAULT_DATA_SOURCE:-tavily}
+      # 缓存配置
+      - SEARCH_CACHE_TTL=3600
+      - LLM_CACHE_TTL=7200
+      # 限流配置
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_REQUESTS=60
+    volumes:
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - report-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      # 水平扩展配置
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '500m'
+          memory: 1G
+
+  # ══════════════════════════════════════════════════════════════
+  # Celery Worker - 后台任务处理（支持多实例）
+  # ══════════════════════════════════════════════════════════════
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: report-agent:2.0
+    restart: unless-stopped
+    command: celery -A tasks worker --loglevel=info --concurrency=4
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      # Redis 配置
+      - REDIS_URL=redis://redis:6379/0
+      # 数据库配置
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/report_db
+      # LLM 配置
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # 数据源配置
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # 模型配置
+      - DEFAULT_LLM_MODEL=${DEFAULT_LLM_MODEL:-deepseek-chat}
+      - DEFAULT_DATA_SOURCE=${DEFAULT_DATA_SOURCE:-tavily}
+      # 缓存配置
+      - SEARCH_CACHE_TTL=3600
+      - LLM_CACHE_TTL=7200
+    volumes:
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - report-network
+    deploy:
+      # 水平扩展配置
+      replicas: 5
+      update_config:
+        parallelism: 2
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # ══════════════════════════════════════════════════════════════
+  # Celery Flower - 任务监控面板
+  # ══════════════════════════════════════════════════════════════
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: report-agent:2.0
+    container_name: report-flower
+    restart: unless-stopped
+    command: celery -A tasks flower --port=5555
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - worker
+    networks:
+      - report-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # ══════════════════════════════════════════════════════════════
+  # Nginx 负载均衡器
+  # ══════════════════════════════════════════════════════════════
+  nginx:
+    image: nginx:alpine
+    container_name: report-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    networks:
+      - report-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+# ══════════════════════════════════════════════════════════════
+# 网络配置
+# ══════════════════════════════════════════════════════════════
+networks:
+  report-network:
+    driver: bridge
+
+# ══════════════════════════════════════════════════════════════
+# 卷配置
+# ══════════════════════════════════════════════════════════════
+volumes:
+  postgres-data:
+  redis-data:
