@@ -43,12 +43,21 @@ def plan_tasks(state: ReportState) -> dict:
     start_time = time.perf_counter()
 
     try:
+        # 获取 Wiki 相关知识作为上下文
+        wiki_context = _get_wiki_context(state["topic"], state.get("report_type", "research"))
+
+        # 构建提示词
         prompt = PLAN_USER.format(
             topic=state["topic"],
             abstract=state.get("abstract", ""),
             report_type=state["report_type"],
             language=state.get("language", "中文"),
         )
+
+        # 如果有 Wiki 上下文，添加到提示词
+        if wiki_context:
+            prompt = f"{prompt}\n\n{wiki_context}"
+            logger.info("[plan_tasks] 已添加 Wiki 知识上下文")
 
         # 使用 chat_with_usage 获取 Token 使用量
         raw, usage = chat_with_usage(
@@ -112,3 +121,27 @@ def plan_tasks(state: ReportState) -> dict:
             "error_msg": str(e),
             "retry_count": state.get("retry_count", 0) + 1,
         }
+
+
+def _get_wiki_context(topic: str, report_type: str) -> str:
+    """获取 Wiki 知识上下文
+
+    Args:
+        topic: 报告主题
+        report_type: 报告类型
+
+    Returns:
+        Wiki 知识上下文字符串
+    """
+    try:
+        from wiki import generate_report_context
+
+        context = generate_report_context(topic, report_type)
+
+        if context:
+            logger.info("[plan_tasks] 获取到 Wiki 上下文，长度: %d", len(context))
+        return context
+
+    except Exception as e:
+        logger.warning("[plan_tasks] 获取 Wiki 上下文失败: %s", e)
+        return ""

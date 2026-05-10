@@ -29,12 +29,15 @@
 - 🔒 **安全审计** - 内置红黑对抗安全检查
 - 📈 **Token 统计** - 完整的使用量追踪
 - ⏪ **版本回滚** - 基于快照的时间旅行功能
+- 📚 **Wiki 知识库** - 报告自动入库，知识复用加速生成
+- 📡 **LangSmith 监控** - LLM 调用追踪和性能分析
 
 ## 📋 目录
 
 - [快速开始](#-快速开始)
 - [安装](#-安装)
 - [使用方法](#-使用方法)
+- [Wiki 知识库](#-wiki-知识库)
 - [并发架构](#-并发架构)
 - [项目结构](#-项目结构)
 - [配置说明](#-配置说明)
@@ -192,6 +195,89 @@ curl http://localhost:8000/api/reports/abc12345
 curl -X POST "http://localhost:8000/api/reports/abc12345/resume?decision=approve"
 ```
 
+## 📚 Wiki 知识库
+
+Wiki 知识库是一个智能知识管理系统，能够自动将生成的报告转化为可复用的知识点，加速后续报告生成。
+
+### 核心功能
+
+- **自动入库**: 报告生成完成后自动提取知识点存入知识库
+- **智能检索**: 支持关键词搜索和语义搜索
+- **知识复用**: 新报告生成时自动获取相关知识作为参考
+- **分类管理**: 按技术、市场、数据、风险、建议等分类组织
+
+### 工作流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Wiki 知识库系统                           │
+├─────────────────────────────────────────────────────────────┤
+│  报告生成完成 ──▶ 章节分割 ──▶ 关键词提取 ──▶ 知识点入库    │
+│       │                                          │          │
+│       │                                          ▼          │
+│       │              知识索引 + 向量存储                     │
+│       │                                          │          │
+│       ▼                                          ▼          │
+│  新报告主题 ──▶ 知识检索 ──▶ 上下文生成 ──▶ 加速生成       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### API 端点
+
+```bash
+# 搜索知识库
+curl -X POST http://localhost:8000/api/wiki/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "人工智能", "limit": 5}'
+
+# 获取知识库统计
+curl http://localhost:8000/api/wiki/stats
+
+# 推荐相关知识
+curl "http://localhost:8000/api/wiki/recommend?topic=AI发展趋势"
+
+# 手动入库报告
+curl -X POST http://localhost:8000/api/wiki/ingest/{report_id}
+```
+
+### 配置选项
+
+```bash
+# 启用 Wiki 知识库
+WIKI_ENABLED=true
+
+# 知识点最小内容长度（字符）
+WIKI_MIN_CONTENT_LENGTH=100
+
+# 知识点最大分块大小（字符）
+WIKI_MAX_CHUNK_SIZE=1000
+
+# 相似度阈值（0-1）
+WIKI_SIMILARITY_THRESHOLD=0.7
+```
+
+### 使用示例
+
+```python
+from wiki import search_knowledge, auto_ingest_report
+
+# 搜索知识
+results = search_knowledge("人工智能发展趋势", limit=5)
+for r in results:
+    print(f"标题: {r['title']}")
+    print(f"分类: {r['category']}")
+    print(f"相关度: {r['relevance_score']}")
+
+# 手动入库报告
+count = auto_ingest_report(
+    report_content=report_text,
+    report_id="report_001",
+    report_title="AI 发展报告",
+    report_type="research",
+)
+print(f"入库了 {count} 个知识点")
+```
+
 ## 🏗️ 并发架构
 
 ### 架构图
@@ -248,6 +334,8 @@ report-agent-system/
 ├── tasks.py              # Celery 后台任务
 ├── cache.py              # 缓存层模块
 ├── rate_limit.py         # API 限流和用户配额
+├── wiki.py               # Wiki 知识库模块
+├── langsmith_client.py   # LangSmith 监控客户端
 ├── tools/
 │   ├── llm.py            # LLM + 多源搜索
 │   ├── export.py         # 导出工具
@@ -257,15 +345,23 @@ report-agent-system/
 │   ├── gather_data.py    # 并发数据收集
 │   ├── draft.py          # 草案撰写
 │   ├── review.py         # 质量审核
-│   ├── finalize.py       # 最终输出
+│   ├── finalize.py       # 最终输出（含 Wiki 入库）
 │   └── scheduler.py      # 时间施行
 ├── security/
 │   └── security_audit.py # 安全审计
+├── frontend/             # React 前端
+│   ├── src/
+│   │   ├── pages/        # 页面组件
+│   │   ├── components/   # UI 组件
+│   │   ├── store/        # 状态管理
+│   │   └── lib/          # API 客户端
+│   └── package.json
 ├── tests/
 │   ├── test_unit_scaling.py      # 单元测试
 │   ├── test_integration_scaling.py # 集成测试
 │   ├── test_performance.py       # 性能测试
 │   ├── test_concurrency.py       # 并发测试
+│   ├── test_wiki.py              # Wiki 知识库测试
 │   └── TEST_REPORT.md            # 测试报告
 ├── k8s/                   # Kubernetes 配置
 │   ├── namespace.yaml
@@ -372,7 +468,7 @@ set_active_data_sources(['tavily', 'serper'])
 
 | 端点 | 方法 | 描述 |
 |-----|------|------|
-| `/health` | GET | 健康检查 |
+| `/api/health` | GET | 健康检查 |
 | `/api/reports` | POST | 创建报告任务 |
 | `/api/reports/{id}` | GET | 获取报告状态 |
 | `/api/reports/{id}/resume` | POST | 恢复任务执行 |
@@ -380,6 +476,10 @@ set_active_data_sources(['tavily', 'serper'])
 | `/api/data-sources` | GET | 列出可用数据源 |
 | `/api/reports/{id}/download` | GET | 下载报告 |
 | `/api/security/audit` | GET | 运行安全审计 |
+| `/api/wiki/search` | POST | 搜索知识库 |
+| `/api/wiki/stats` | GET | 知识库统计 |
+| `/api/wiki/recommend` | GET | 推荐相关知识 |
+| `/api/monitoring/status` | GET | LangSmith 监控状态 |
 
 详细 API 文档请参考 [PRODUCT_GUIDE.md](PRODUCT_GUIDE.md)。
 

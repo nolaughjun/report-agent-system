@@ -62,6 +62,14 @@ def finalize_node(state: ReportState) -> dict:
 
         logger.info("[finalize] 完成，耗时 %dms", elapsed_ms)
 
+        # 自动入库到 Wiki 知识库
+        _auto_ingest_to_wiki(
+            report_content=current_draft,
+            report_id=state.get("thread_id", ""),
+            topic=topic,
+            report_type=state.get("report_type", "research"),
+        )
+
         return {
             "final_report": current_draft,
             "export_path": export_result.get("pdf") or export_result.get("markdown"),
@@ -137,3 +145,27 @@ def _calculate_success_rate(state: ReportState) -> float:
 
     success = sum(1 for s in sources if "失败" not in s.get("content", ""))
     return success / len(sources)
+
+
+def _auto_ingest_to_wiki(
+    report_content: str,
+    report_id: str,
+    topic: str,
+    report_type: str,
+):
+    """自动将报告入库到 Wiki 知识库"""
+    try:
+        from wiki import auto_ingest_report
+
+        count = auto_ingest_report(
+            report_content=report_content,
+            report_id=report_id,
+            report_title=topic,
+            report_type=report_type,
+        )
+
+        if count > 0:
+            logger.info("[finalize] 已将 %d 个知识点入库到 Wiki", count)
+
+    except Exception as e:
+        logger.warning("[finalize] Wiki 入库失败: %s", e)

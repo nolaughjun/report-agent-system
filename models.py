@@ -215,11 +215,104 @@ class UserQuota(Base):
 
 
 # ══════════════════════════════════════════════════════════════
+# Wiki 知识库模型
+# ══════════════════════════════════════════════════════════════
+
+class WikiKnowledge(Base):
+    """Wiki 知识库表"""
+    __tablename__ = "wiki_knowledge"
+
+    # 主键
+    id = Column(String(32), primary_key=True)
+
+    # 内容
+    title = Column(String(500), nullable=False)
+    content = Column(Text, nullable=False)
+
+    # 来源
+    source_report_id = Column(String(32), ForeignKey("report_tasks.thread_id"), nullable=True)
+
+    # 分类和标签
+    category = Column(String(50), default="general", index=True)
+    tags = Column(JSON, default=list)
+    keywords = Column(JSON, default=list)
+
+    # 向量嵌入（用于语义搜索）
+    embedding = Column(JSON, nullable=True)
+
+    # 元数据
+    metadata = Column(JSON, default=dict)
+
+    # 版本控制
+    version = Column(Integer, default=1)
+
+    # 时间戳
+    created_at = Column(DateTime, default=utcnow, index=True)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    # 访问统计
+    view_count = Column(Integer, default=0)
+    last_accessed = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<WikiKnowledge(id={self.id}, title={self.title[:30]}...)>"
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "title": self.title,
+            "content": self.content,
+            "source_report_id": self.source_report_id,
+            "category": self.category,
+            "tags": self.tags or [],
+            "keywords": self.keywords or [],
+            "version": self.version,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "view_count": self.view_count,
+            "metadata": self.metadata or {},
+        }
+
+
+class WikiCollection(Base):
+    """Wiki 知识集合（用于组织知识点）"""
+    __tablename__ = "wiki_collections"
+
+    id = Column(String(32), primary_key=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # 知识点 ID 列表
+    knowledge_ids = Column(JSON, default=list)
+
+    # 所有者
+    user_id = Column(String(64), nullable=True, index=True)
+    is_public = Column(Boolean, default=True)
+
+    # 时间戳
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "knowledge_ids": self.knowledge_ids or [],
+            "is_public": self.is_public,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ══════════════════════════════════════════════════════════════
 # 索引
 # ══════════════════════════════════════════════════════════════
 
 Index('ix_report_tasks_status_created', ReportTask.status, ReportTask.created_at)
 Index('ix_report_tasks_user_created', ReportTask.user_id, ReportTask.created_at)
+Index('ix_wiki_knowledge_category', WikiKnowledge.category)
+Index('ix_wiki_knowledge_created', WikiKnowledge.created_at)
 
 
 # ══════════════════════════════════════════════════════════════

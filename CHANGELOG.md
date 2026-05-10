@@ -8,9 +8,42 @@
 ## [Unreleased]
 
 ### 计划中
-- Web UI 界面
-- 更多 LLM 模型支持
+- 向量数据库集成（Pinecone/Milvus）
 - 报告模板系统
+- 多语言前端界面
+
+## [2.1.0] - 2026-05-10
+
+### 新增
+- **Wiki 知识库系统**: 报告自动入库，知识复用加速生成
+  - 自动章节分割和知识点提取
+  - 关键词索引和语义搜索
+  - 新报告生成时自动获取相关知识
+  - 分类管理：技术、市场、数据、风险、建议
+- **LangSmith 监控集成**: LLM 调用追踪和性能分析
+  - 自动追踪所有 LLM 调用
+  - Token 使用量统计
+  - 延迟监控
+  - 反馈评分记录
+- **React 前端界面**: 现代化的 Web UI
+  - 专业商务风格设计
+  - 工作台仪表板
+  - 报告创建和管理
+  - 系统设置页面
+- **Wiki API 端点**:
+  - `POST /api/wiki/search` - 搜索知识库
+  - `GET /api/wiki/stats` - 获取统计
+  - `GET /api/wiki/recommend` - 推荐知识
+  - `POST /api/wiki/ingest/{id}` - 手动入库
+- **监控 API 端点**:
+  - `GET /api/monitoring/status` - 监控状态
+  - `GET /api/monitoring/traces/{id}` - 追踪详情
+  - `POST /api/monitoring/feedback` - 记录反馈
+
+### 改进
+- 规划节点集成 Wiki 知识上下文
+- 报告完成时自动入库到 Wiki
+- 完善的测试覆盖（24 个 Wiki 测试用例）
 
 ## [2.0.0] - 2026-05-09
 

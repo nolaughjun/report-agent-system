@@ -699,6 +699,166 @@ async def export_traces(format: str = "json"):
 
 
 # ══════════════════════════════════════════════════════════════
+# Wiki 知识库端点
+# ══════════════════════════════════════════════════════════════
+
+
+class WikiSearchRequest(BaseModel):
+    """Wiki 搜索请求"""
+    query: str = Field(..., min_length=1, max_length=500, description="搜索查询")
+    category: Optional[str] = Field(None, description="分类过滤")
+    limit: int = Field(10, ge=1, le=100, description="返回数量")
+
+
+class WikiEntryResponse(BaseModel):
+    """Wiki 条目响应"""
+    id: str
+    title: str
+    content: str
+    category: str
+    keywords: list[str]
+    relevance_score: float
+    source_report_id: Optional[str]
+    created_at: Optional[str]
+
+
+@app.get("/api/wiki/stats", tags=["Wiki"])
+async def get_wiki_stats():
+    """获取 Wiki 知识库统计信息"""
+    from wiki import get_wiki_stats
+
+    stats = get_wiki_stats()
+    return stats
+
+
+@app.post("/api/wiki/search", response_model=list[WikiEntryResponse], tags=["Wiki"])
+async def search_wiki(
+    request: WikiSearchRequest,
+    authorized: bool = Depends(verify_api_key),
+):
+    """搜索 Wiki 知识库"""
+    from wiki import search_knowledge
+
+    results = search_knowledge(
+        query=request.query,
+        category=request.category,
+        limit=request.limit,
+        use_semantic=True,
+    )
+
+    return [
+        WikiEntryResponse(
+            id=r.get("id", ""),
+            title=r.get("title", ""),
+            content=r.get("content", "")[:500] + "..." if len(r.get("content", "")) > 500 else r.get("content", ""),
+            category=r.get("category", "general"),
+            keywords=r.get("keywords", []),
+            relevance_score=r.get("relevance_score", 0.0),
+            source_report_id=r.get("source_report_id"),
+            created_at=r.get("created_at"),
+        )
+        for r in results
+    ]
+
+
+@app.get("/api/wiki/entries/{entry_id}", tags=["Wiki"])
+async def get_wiki_entry(entry_id: str):
+    """获取单个 Wiki 条目"""
+    # 从存储中获取
+    from wiki import _knowledge_store
+
+    if entry_id in _knowledge_store:
+        return _knowledge_store[entry_id]
+
+    # 尝试从数据库获取
+    if os.environ.get("DATABASE_URL"):
+        try:
+            from database import get_db_session
+            from models import WikiKnowledge
+
+            with get_db_session() as session:
+                entry = session.query(WikiKnowledge).filter_by(id=entry_id).first()
+                if entry:
+                    return entry.to_dict()
+        except Exception as e:
+            logger.error("[API] 获取 Wiki 条目失败: %s", e)
+
+    raise HTTPException(status_code=404, detail="知识点不存在")
+
+
+@app.post("/api/wiki/ingest/{report_id}", tags=["Wiki"])
+async def ingest_report_to_wiki(
+    report_id: str,
+    authorized: bool = Depends(verify_api_key),
+):
+    """将指定报告入库到 Wiki 知识库"""
+    from graph import get_task_state
+    from wiki import auto_ingest_report
+
+    # 获取报告内容
+    state = get_task_state(report_id)
+
+    if not state:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    final_report = state.get("final_report") or state.get("current_draft")
+
+    if not final_report:
+        raise HTTPException(status_code=400, detail="报告内容为空")
+
+    # 入库
+    count = auto_ingest_report(
+        report_content=final_report,
+        report_id=report_id,
+        report_title=state.get("topic", ""),
+        report_type=state.get("report_type", "research"),
+    )
+
+    return {
+        "status": "success",
+        "report_id": report_id,
+        "entries_created": count,
+    }
+
+
+@app.get("/api/wiki/categories", tags=["Wiki"])
+async def get_wiki_categories():
+    """获取 Wiki 知识库分类列表"""
+    categories = [
+        {"id": "general", "name": "通用", "description": "通用知识点"},
+        {"id": "技术", "name": "技术", "description": "技术方案和架构"},
+        {"id": "市场", "name": "市场", "description": "市场分析和趋势"},
+        {"id": "数据", "name": "数据", "description": "数据统计和分析"},
+        {"id": "风险", "name": "风险", "description": "风险和挑战分析"},
+        {"id": "建议", "name": "建议", "description": "建议和对策"},
+    ]
+
+    return categories
+
+
+@app.get("/api/wiki/recommend", tags=["Wiki"])
+async def recommend_knowledge(
+    topic: str,
+    report_type: str = "research",
+    limit: int = 5,
+):
+    """根据主题推荐相关知识"""
+    from wiki import get_relevant_knowledge_for_topic
+
+    results = get_relevant_knowledge_for_topic(
+        topic=topic,
+        report_type=report_type,
+        max_entries=limit,
+    )
+
+    return {
+        "topic": topic,
+        "report_type": report_type,
+        "recommendations": results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
 # 异常处理
 # ══════════════════════════════════════════════════════════════
 
