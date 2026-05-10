@@ -36,23 +36,69 @@ PLAN_USER = """请为以下报告生成详细的规划方案：
 - 附录中包含参考文件，数据来源标注等信息
 """
 
+PLAN_RETRY_USER = """请为以下报告生成更详细的规划方案（改进版）：
+
+主题：{topic}
+概要：{abstract}
+报告类型：{report_type}
+语言：{language}
+
+之前的数据收集存在以下问题，请改进检索词以获得更高质量的数据：
+{issues}
+
+之前的检索词：
+{old_queries}
+
+请输出如下 JSON 格式（不要输出任何其他内容）：
+{{
+  "outline": ["章节1", "章节2", "章节3", "章节4", "章节5"],
+  "search_queries": ["检索词1", "检索词2", "检索词3", "检索词4", "检索词5"]
+}}
+
+要求：
+- outline：5~7个章节，覆盖背景、现状、分析、结论,展望，附录等维度
+- search_queries：5~8个更精准的检索词，避免之前的问题
+- 语言与报告语言保持一致
+- 附录中包含参考文件，数据来源标注等信息
+"""
+
 
 def plan_tasks(state: ReportState) -> dict:
     """规划节点"""
     logger.info("[plan_tasks] 开始规划，主题：%s", state["topic"])
     start_time = time.perf_counter()
 
+    # 检查是否是数据收集重试
+    gather_retry_count = state.get("gather_retry_count", 0)
+    is_retry = gather_retry_count > 0
+
     try:
         # 获取 Wiki 相关知识作为上下文
         wiki_context = _get_wiki_context(state["topic"], state.get("report_type", "research"))
 
         # 构建提示词
-        prompt = PLAN_USER.format(
-            topic=state["topic"],
-            abstract=state.get("abstract", ""),
-            report_type=state["report_type"],
-            language=state.get("language", "中文"),
-        )
+        if is_retry:
+            # 数据收集重试，使用改进版提示词
+            revision_instructions = state.get("revision_instructions", [])
+            old_queries = state.get("search_queries", [])
+            issues_text = "\n".join(f"- {i}" for i in revision_instructions) if revision_instructions else "数据质量不足"
+
+            prompt = PLAN_RETRY_USER.format(
+                topic=state["topic"],
+                abstract=state.get("abstract", ""),
+                report_type=state["report_type"],
+                language=state.get("language", "中文"),
+                issues=issues_text,
+                old_queries=", ".join(old_queries),
+            )
+            logger.info("[plan_tasks] 数据收集重试 #%d，使用改进版提示词", gather_retry_count)
+        else:
+            prompt = PLAN_USER.format(
+                topic=state["topic"],
+                abstract=state.get("abstract", ""),
+                report_type=state["report_type"],
+                language=state.get("language", "中文"),
+            )
 
         # 如果有 Wiki 上下文，添加到提示词
         if wiki_context:

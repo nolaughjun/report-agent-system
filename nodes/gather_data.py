@@ -359,6 +359,10 @@ def gather_data_concurrent(state: ReportState) -> dict:
         "check_time_ms": review_time_ms,
     }
 
+    # 计算成功率
+    success_count = sum(1 for s in sources if "失败" not in s.get("content", "") and "异常" not in s.get("content", ""))
+    success_rate = success_count / len(sources) if sources else 0
+
     # 添加聚合摘要
     integrated_source: ResearchSource = {
         "source_type": "document",
@@ -378,38 +382,82 @@ def gather_data_concurrent(state: ReportState) -> dict:
     sources.append(integrated_source)
 
     # 决定下一步
-    # 注意：gather_data 阶段的重试不影响 retry_count
-    # retry_count 只用于报告修订阶段的重试计数
+    # 数据收集阶段有独立的重试机制
+    gather_retry_count = state.get("gather_retry_count", 0)
+    max_gather_retry = state.get("max_gather_retry", 3)
 
     if quality_passed:
         next_step = "drafting"
         logger.info("[gather_data_concurrent] 质量通过 (%.2f)", overall_score)
+        return {
+            "research_sources": sources,
+            "quality_checks": [quality_check],
+            "collection_tasks": collection_tasks,
+            "collection_progress": 1.0,
+            "current_step": next_step,
+            "gather_retry_count": 0,  # 重置收集重试计数
+            "error_msg": None,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": (
+                        f"[gather_data_concurrent] 并发收集完成: {len(sources) - 1} 条, "
+                        f"耗时 {collection_time_ms}ms, 成功率 {success_rate:.0%}, "
+                        f"质量 {overall_score:.2f}"
+                    ),
+                }
+            ],
+        }
     else:
-        # 数据质量不足，继续到 drafting 阶段
-        # 让后续的质量审核节点决定是否需要修订
-        next_step = "drafting"
-        logger.warning("[gather_data_concurrent] 质量不足 (%.2f)，继续到撰写阶段", overall_score)
-
-    # 计算成功率
-    success_count = sum(1 for s in sources if "失败" not in s.get("content", ""))
-    success_rate = success_count / len(sources) if sources else 0
-
-    return {
-        "research_sources": sources,
-        "quality_checks": [quality_check],
-        "collection_tasks": collection_tasks,
-        "collection_progress": 1.0,
-        "current_step": next_step,
-        # 不修改 retry_count，让修订阶段单独控制
-        "error_msg": None,
-        "messages": [
-            {
-                "role": "assistant",
-                "content": (
-                    f"[gather_data_concurrent] 并发收集完成: {len(sources) - 1} 条, "
-                    f"耗时 {collection_time_ms}ms, 成功率 {success_rate:.0%}, "
-                    f"质量 {overall_score:.2f}"
-                ),
+        # 数据质量不足，检查是否还能重试
+        if gather_retry_count < max_gather_retry:
+            # 返回 planning 阶段重新生成检索词
+            new_retry_count = gather_retry_count + 1
+            logger.warning(
+                "[gather_data_concurrent] 质量不足 (%.2f)，重新规划检索词 (重试 %d/%d)",
+                overall_score, new_retry_count, max_gather_retry
+            )
+            return {
+                "research_sources": sources,
+                "quality_checks": [quality_check],
+                "collection_tasks": collection_tasks,
+                "collection_progress": 1.0,
+                "current_step": "planning",  # 返回规划阶段重新生成检索词
+                "gather_retry_count": new_retry_count,
+                "error_msg": None,
+                "revision_instructions": agg.get("suggestions", []),
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"[gather_data_concurrent] 数据质量不足 ({overall_score:.2f} < {threshold}), "
+                            f"重新规划检索词 (重试 {new_retry_count}/{max_gather_retry})"
+                        ),
+                    }
+                ],
             }
-        ],
-    }
+        else:
+            # 达到最大重试次数，继续到撰写阶段
+            logger.warning(
+                "[gather_data_concurrent] 达到最大收集重试次数 (%d/%d)，继续到撰写阶段",
+                gather_retry_count, max_gather_retry
+            )
+            return {
+                "research_sources": sources,
+                "quality_checks": [quality_check],
+                "collection_tasks": collection_tasks,
+                "collection_progress": 1.0,
+                "current_step": "drafting",
+                "gather_retry_count": gather_retry_count,
+                "error_msg": None,
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"[gather_data_concurrent] 并发收集完成: {len(sources) - 1} 条, "
+                            f"耗时 {collection_time_ms}ms, 成功率 {success_rate:.0%}, "
+                            f"质量 {overall_score:.2f} (已达最大重试)"
+                        ),
+                    }
+                ],
+            }

@@ -159,6 +159,8 @@ class ReportState(TypedDict):
     max_concurrent: int  # 最大并发数
     collection_tasks: list[CollectionTask]  # 收集任务列表
     collection_progress: float  # 收集进度 0.0-1.0
+    gather_retry_count: int  # 数据收集重试次数
+    max_gather_retry: int  # 最大数据收集重试次数
 
     # ── 4. 时间施行（新增）───────────────────────────────────
     schedule: ExecutionSchedule | None  # 定时执行配置
@@ -275,6 +277,8 @@ def create_initial_state(
         "max_concurrent": max_concurrent,
         "collection_tasks": [],
         "collection_progress": 0.0,
+        "gather_retry_count": 0,
+        "max_gather_retry": 3,  # 默认最多 3 次收集重试
         # 时间施行
         "schedule": schedule,
         # 性能指标
