@@ -111,6 +111,10 @@ def route_after_gather(state: ReportState) -> Literal["generate_draft", "plannin
 
 
 def route_after_review(state: ReportState) -> Literal["human_review", "revising", END]:
+    """质量审核后的路由
+
+    注意：retry_count 用于自动质量重试，不限制用户主动修改
+    """
     if state.get("error_msg"):
         return END
 
@@ -125,26 +129,34 @@ def route_after_review(state: ReportState) -> Literal["human_review", "revising"
                 last_quality["score"] if last_quality else 0,
                 threshold)
 
-    # 检查是否达到最大重试次数
-    if retry_count >= max_retry:
-        logger.warning("[route] 质量审核达到最大重试次数 (%d/%d)，终止", retry_count, max_retry)
-        return END
-
+    # 质量通过，进入人工审核
     if last_quality and last_quality["score"] >= threshold:
         return "human_review"
+
+    # 质量未通过，检查是否还能自动重试
+    if retry_count >= max_retry:
+        logger.warning("[route] 质量审核达到最大自动重试次数 (%d/%d)，但允许人工审核", retry_count, max_retry)
+        # 即使达到最大重试，也进入人工审核让用户决定
+        return "human_review"
+
+    # 自动重试改进
     return "revising"
 
 
 def route_after_human(state: ReportState) -> Literal["finalize", "revising", END]:
+    """人工审核后的路由
+
+    用户选择 approve → 最终化
+    用户选择 revise → 修改报告（不受 max_retry 限制）
+    """
     decision = state.get("human_decision", "approve")
-    retry_count = state.get("retry_count", 0)
-    max_retry = state.get("max_retry", 3)
 
     if decision == "approve":
         return "finalize"
-    if retry_count >= max_retry:
-        logger.warning("[route] 达到最大重试次数，终止")
-        return END
+
+    # 用户选择修改，直接进入 revising
+    # 注意：用户主动修改不受 max_retry 限制
+    logger.info("[route_after_human] 用户选择修改报告，进入 revising 节点")
     return "revising"
 
 
