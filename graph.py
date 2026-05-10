@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -443,11 +444,11 @@ def get_checkpoint_history(thread_id: str) -> list[dict]:
 
 
 def rollback_to_checkpoint(thread_id: str, checkpoint_id: str) -> dict:
-    """回滚到指定 checkpoint
+    """回滚到指定 checkpoint（真正的状态恢复）
 
     Args:
         thread_id: 任务 ID
-        checkpoint_id: checkpoint ID
+        checkpoint_id: 目标 checkpoint ID
 
     Returns:
         回滚后的状态
@@ -455,30 +456,126 @@ def rollback_to_checkpoint(thread_id: str, checkpoint_id: str) -> dict:
     config = {
         "configurable": {
             "thread_id": thread_id,
-            "checkpoint_id": checkpoint_id,
         }
     }
 
     try:
-        # 获取指定 checkpoint 的状态
-        state = app.get_state(config)
+        # 1. 获取目标 checkpoint 的状态
+        target_config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+        target_state = app.get_state(target_config)
 
-        if not state or not state.values:
+        if not target_state or not target_state.values:
             logger.warning("[time_travel] 未找到 checkpoint: %s", checkpoint_id)
             return {"error": f"未找到 checkpoint: {checkpoint_id}"}
 
+        # 2. 获取当前状态以比较
+        current_state = app.get_state(config)
+        current_step = current_state.values.get("current_step", "unknown") if current_state else "unknown"
+
         logger.info(
-            "[time_travel] 回滚到 checkpoint: thread=%s, checkpoint=%s, step=%s",
+            "[time_travel] 开始回滚: thread=%s, from_step=%s, to_checkpoint=%s",
             thread_id,
-            checkpoint_id,
-            state.values.get("current_step", "unknown")
+            current_step,
+            checkpoint_id[:8] if checkpoint_id else "N/A"
         )
 
-        return state.values
+        # 3. 使用 update_state 恢复目标状态的所有值
+        # 这会创建一个新的 checkpoint，内容是目标状态
+        values_to_restore = dict(target_state.values)
+
+        # 移除一些不应该直接恢复的系统字段
+        values_to_restore.pop("messages", None)  # 消息可以保留
+        values_to_restore["rolled_back_from"] = current_step
+        values_to_restore["rollback_time"] = datetime.now(UTC).isoformat() if 'datetime' in dir() else ""
+
+        # 4. 执行状态更新
+        app.update_state(config, values_to_restore)
+
+        # 5. 验证回滚结果
+        restored_state = app.get_state(config)
+
+        logger.info(
+            "[time_travel] 回滚完成: thread=%s, new_step=%s, checkpoint_id=%s",
+            thread_id,
+            restored_state.values.get("current_step", "unknown"),
+            checkpoint_id[:8] if checkpoint_id else "N/A"
+        )
+
+        return dict(restored_state.values)
 
     except Exception as e:
         logger.error("[time_travel] 回滚失败: %s", e)
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
+
+
+def rollback_to_step(thread_id: str, target_step: str) -> dict:
+    """回滚到指定步骤（更高级的 API）
+
+    根据步骤名称自动查找最近的 checkpoint 并回滚。
+
+    Args:
+        thread_id: 任务 ID
+        target_step: 目标步骤名称 (如 "planning", "gather_data", "generate_draft")
+
+    Returns:
+        回滚后的状态
+    """
+    # 获取历史记录
+    history = get_checkpoint_history(thread_id)
+
+    # 查找目标步骤的 checkpoint
+    for h in history:
+        if h.get("step") == target_step:
+            checkpoint_id = h.get("checkpoint_id", "")
+            if checkpoint_id:
+                logger.info("[time_travel] 找到目标步骤 %s 的 checkpoint: %s",
+                           target_step, checkpoint_id[:8])
+                return rollback_to_checkpoint(thread_id, checkpoint_id)
+
+    logger.warning("[time_travel] 未找到步骤 %s 的 checkpoint", target_step)
+    return {"error": f"未找到步骤 {target_step} 的 checkpoint"}
+
+
+def list_rollback_points(thread_id: str) -> list[dict]:
+    """列出可回滚的点
+
+    返回所有可回滚的 checkpoint 列表，按时间倒序排列。
+
+    Args:
+        thread_id: 任务 ID
+
+    Returns:
+        可回滚点列表
+    """
+    history = get_checkpoint_history(thread_id)
+
+    rollback_points = []
+    seen_steps = set()
+
+    for h in history:
+        step = h.get("step", "unknown")
+        checkpoint_id = h.get("checkpoint_id", "")
+
+        # 每个步骤只保留最新的 checkpoint
+        if step not in seen_steps and checkpoint_id:
+            rollback_points.append({
+                "step": step,
+                "checkpoint_id": checkpoint_id,
+                "version": h.get("version", 0),
+                "retry_count": h.get("retry_count", 0),
+            })
+            seen_steps.add(step)
+
+    logger.info("[time_travel] 找到 %d 个可回滚点", len(rollback_points))
+
+    return rollback_points
 
 
 def get_token_usage_summary(thread_id: str) -> dict:
