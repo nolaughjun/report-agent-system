@@ -188,6 +188,7 @@ class ReportState(TypedDict):
     # ── 11. 人工审核 ──────────────────────────────────────────
     human_decision: Literal["approve", "revise"] | None
     human_comments: str | None
+    revision_history: list[dict]  # 修改历史记录
 
     # ── 12. 最终输出 ──────────────────────────────────────────
     final_report: str | None
@@ -295,6 +296,7 @@ def create_initial_state(
         # 人工审核
         "human_decision": None,
         "human_comments": None,
+        "revision_history": [],
         # 最终输出
         "final_report": None,
         "export_path": None,

@@ -231,14 +231,79 @@ def build_graph() -> StateGraph:
 
 
 def _revise_node(state: ReportState) -> dict:
-    """修改节点"""
+    """修改节点 - 根据用户意见真正修改报告"""
     retry_count = state.get("retry_count", 0)
     max_retry = state.get("max_retry", 3)
+    human_comments = state.get("human_comments", "")
+    current_draft = state.get("current_draft", "")
+    topic = state.get("topic", "")
 
-    logger.info("[revising] 开始修改报告, 当前 retry_count=%d, max_retry=%d", retry_count, max_retry)
+    logger.info("[revising] 开始修改报告, retry_count=%d/%d", retry_count, max_retry)
+    logger.info("[revising] 用户修改意见: %s", human_comments[:100] if human_comments else "无")
 
     new_retry_count = retry_count + 1
-    logger.info("[revising] 更新 retry_count: %d -> %d", retry_count, new_retry_count)
+
+    # 如果有用户修改意见，调用 LLM 进行修改
+    if human_comments and current_draft:
+        try:
+            from tools.llm import chat
+
+            revise_prompt = f"""你是一位专业的报告编辑专家。请根据用户的修改意见对报告进行修改。
+
+# 原始报告主题
+{topic}
+
+# 原始报告内容
+{current_draft}
+
+# 用户修改意见
+{human_comments}
+
+# 修改要求
+1. 仔细理解用户的修改意见
+2. 在保持报告整体结构的基础上，针对用户提出的具体问题进行修改
+3. 如果用户要求补充内容，请进行合理的补充
+4. 如果用户要求删减或调整，请相应修改
+5. 修改后的报告应该更加完善，更符合用户期望
+6. 保持 Markdown 格式输出
+
+请直接输出修改后的完整报告内容："""
+
+            logger.info("[revising] 调用 LLM 进行报告修改...")
+
+            revised_draft = chat(
+                messages=[{"role": "user", "content": revise_prompt}],
+                max_tokens=8000,
+                temperature=0.3,
+                node="revising",
+            )
+
+            if revised_draft:
+                logger.info("[revising] 报告修改完成，新长度: %d 字符", len(revised_draft))
+
+                # 记录修改历史
+                revision_history = state.get("revision_history", [])
+                revision_history.append({
+                    "version": new_retry_count,
+                    "comments": human_comments,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                })
+
+                return {
+                    "retry_count": new_retry_count,
+                    "current_draft": revised_draft,
+                    "revision_history": revision_history,
+                    "messages": [{"role": "assistant", "content": f"[revising] 已根据您的意见完成第 {new_retry_count} 次修改"}],
+                }
+            else:
+                logger.warning("[revising] LLM 返回空内容，使用原报告")
+
+        except Exception as e:
+            logger.error("[revising] LLM 调用失败: %s", e)
+            # 失败时仍然增加重试计数，避免无限循环
+
+    # 如果没有修改意见或 LLM 调用失败
+    logger.warning("[revising] 无有效修改意见或修改失败，仅更新重试计数")
 
     return {
         "retry_count": new_retry_count,
