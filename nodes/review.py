@@ -97,10 +97,11 @@ def quality_review(state: ReportState) -> dict:
         # 创建 Token 使用量更新
         token_update = make_token_usage_update(usage)
 
+        # 无论质量是否通过，都进入人工审核等待用户决策
         return {
             "quality_checks": [quality_check],
             "revision_instructions": revision_instructions,
-            "current_step": "human_review" if passed else "revising",
+            "current_step": "human_review",
             "error_msg": None,
             "messages": [
                 {"role": "assistant", "content": f"[quality_review] 审核 {quality_check['score']:.2f}, 耗时 {elapsed_ms}ms"}

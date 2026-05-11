@@ -596,14 +596,17 @@ def rollback_to_checkpoint(thread_id: str, checkpoint_id: str) -> dict:
 
         # 5. 验证回滚结果
         restored_state = app.get_state(config)
+        restored_step = restored_state.values.get("current_step", "unknown")
 
         logger.info(
             "[time_travel] 回滚完成: thread=%s, new_step=%s, checkpoint_id=%s",
             thread_id,
-            restored_state.values.get("current_step", "unknown"),
+            restored_step,
             checkpoint_id[:8] if checkpoint_id else "N/A"
         )
 
+        # 返回回滚后的状态，不自动执行
+        # 用户需要调用 resume_with_decision 或 run_from_checkpoint 继续执行
         return dict(restored_state.values)
 
     except Exception as e:
@@ -639,6 +642,66 @@ def rollback_to_step(thread_id: str, target_step: str) -> dict:
 
     logger.warning("[time_travel] 未找到步骤 %s 的 checkpoint", target_step)
     return {"error": f"未找到步骤 {target_step} 的 checkpoint"}
+
+
+def run_from_checkpoint(thread_id: str, auto_approve: bool = False) -> dict:
+    """从当前 checkpoint 继续执行
+
+    用于时间旅行回滚后继续执行。
+
+    Args:
+        thread_id: 任务 ID
+        auto_approve: 是否自动批准人工审核（True 则自动通过，False 则等待人工审核）
+
+    Returns:
+        执行后的状态
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+
+    try:
+        # 获取当前状态
+        current_state = app.get_state(config)
+        if not current_state or not current_state.values:
+            return {"error": "任务不存在或状态为空"}
+
+        current_step = current_state.values.get("current_step", "unknown")
+        human_decision = current_state.values.get("human_decision")
+
+        logger.info("[run_from_checkpoint] 当前步骤: %s, human_decision: %s", current_step, human_decision)
+
+        # 如果在 human_review 且没有决策，需要处理
+        if current_step in ["human_review", "reviewing"] and human_decision is None:
+            if auto_approve:
+                # 自动批准
+                logger.info("[run_from_checkpoint] 自动批准人工审核")
+                app.update_state(
+                    config,
+                    {"human_decision": "approve", "human_comments": ""},
+                    as_node="human_review",
+                )
+            else:
+                # 返回提示，需要用户决策
+                return {
+                    "status": "waiting_review",
+                    "thread_id": thread_id,
+                    "current_step": current_step,
+                    "message": "需要在人工审核阶段，请调用 resume_with_decision 提供决策",
+                    "draft_preview": current_state.values.get("current_draft", "")[:500],
+                    "quality_score": current_state.values.get("quality_checks", [{}])[-1].get("score", 0) if current_state.values.get("quality_checks") else 0,
+                }
+
+        # 继续执行
+        logger.info("[run_from_checkpoint] 继续执行图")
+        result = app.invoke(None, config=config)
+        logger.info("[run_from_checkpoint] 执行完成，最终步骤: %s", result.get("current_step", "unknown"))
+
+        return dict(result)
+
+    except Exception as e:
+        logger.error("[run_from_checkpoint] 执行失败: %s", e)
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 
 def list_rollback_points(thread_id: str) -> list[dict]:

@@ -460,15 +460,30 @@ def _format_state_response(thread_id: str, state: dict) -> dict:
 
     token_summary = get_token_usage_summary(thread_id)
 
+    # 检测是否在等待人工审核
+    # 1. current_step 为 "reviewing" 或 "human_review"
+    # 2. 或者 human_decision 为 None（表示还没有做出决策）
+    current_step = state.get("current_step", "unknown")
+    human_decision = state.get("human_decision")
+
+    # 如果 human_decision 为 None 且有 draft，说明在等待人工审核
+    if human_decision is None and state.get("current_draft"):
+        status = "waiting_review"
+    elif current_step in ["reviewing", "human_review"]:
+        status = "waiting_review"
+    else:
+        status = current_step
+
     return {
         "thread_id": thread_id,
-        "current_step": state.get("current_step", "unknown"),
-        "status": "waiting_review" if state.get("current_step") == "reviewing" else state.get("current_step", "unknown"),
+        "current_step": current_step,
+        "status": status,
         "retry_count": state.get("retry_count", 0),
         "draft_length": len(state.get("current_draft", "")),
         "quality_score": last_quality.get("score") if last_quality else None,
         "export_path": state.get("export_path"),
         "token_usage": token_summary,
+        "draft_preview": state.get("current_draft", "")[:1000] if state.get("current_draft") else None,
     }
 
 

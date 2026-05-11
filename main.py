@@ -307,12 +307,42 @@ def interactive_mode():
                             if 0 <= version_idx < len(history):
                                 checkpoint_id = history[version_idx].get("checkpoint_id", "")
                                 if checkpoint_id:
-                                    from graph import rollback_to_checkpoint
+                                    from graph import rollback_to_checkpoint, run_from_checkpoint
 
                                     restored = rollback_to_checkpoint(thread_id, checkpoint_id)
                                     print(f"\n已回滚到版本 {version_idx}")
                                     print(f"步骤: {restored.get('current_step', 'unknown')}")
-                                    print("提示: 可以使用 resume_with_decision 继续执行")
+
+                                    # 询问是否继续执行
+                                    continue_exec = input("\n是否继续执行？[Y/n]: ").strip().lower() != "n"
+
+                                    if continue_exec:
+                                        restored_step = restored.get("current_step", "unknown")
+
+                                        if restored_step in ["human_review", "reviewing"]:
+                                            # 需要人工审核决策
+                                            print("\n📋 人工审核（回滚后）")
+                                            print("选项:")
+                                            print("  1 - 通过 (approve)")
+                                            print("  2 - 需要修改 (revise)")
+
+                                            choice = input("\n请选择 [1/2]: ").strip()
+                                            decision = "revise" if choice == "2" else "approve"
+                                            comments = ""
+
+                                            if decision == "revise":
+                                                comments = input("请输入修改意见: ").strip()
+
+                                            result = resume_with_decision(thread_id, decision, comments)
+                                        else:
+                                            # 其他步骤，自动继续
+                                            result = run_from_checkpoint(thread_id, auto_approve=False)
+
+                                        print(f"\n执行完成，最终步骤: {result.get('current_step', 'unknown')}")
+                                        if result.get("export_path"):
+                                            print(f"导出路径: {result['export_path']}")
+                                    else:
+                                        print("提示: 可以使用 resume_with_decision 或 run_from_checkpoint 继续执行")
                         except ValueError:
                             print("无效的版本号")
 
