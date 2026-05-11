@@ -113,7 +113,8 @@ def route_after_gather(state: ReportState) -> Literal["generate_draft", "plannin
 def route_after_review(state: ReportState) -> Literal["human_review", "revising", END]:
     """质量审核后的路由
 
-    注意：retry_count 用于自动质量重试，不限制用户主动修改
+    质量通过 → 进入人工审核
+    质量不通过 → 进入人工审核等待用户决策（approve 或 revise）
     """
     if state.get("error_msg"):
         return END
@@ -129,18 +130,15 @@ def route_after_review(state: ReportState) -> Literal["human_review", "revising"
                 last_quality["score"] if last_quality else 0,
                 threshold)
 
-    # 质量通过，进入人工审核
+    # 无论质量是否通过，都进入人工审核
+    # 用户可以选择：approve（通过）或 revise（修改）
     if last_quality and last_quality["score"] >= threshold:
-        return "human_review"
+        logger.info("[route] 质量通过 (%.2f)，进入人工审核", last_quality["score"])
+    else:
+        logger.info("[route] 质量不达标 (%.2f < %.2f)，进入人工审核等待用户修改意见",
+                    last_quality["score"] if last_quality else 0, threshold)
 
-    # 质量未通过，检查是否还能自动重试
-    if retry_count >= max_retry:
-        logger.warning("[route] 质量审核达到最大自动重试次数 (%d/%d)，但允许人工审核", retry_count, max_retry)
-        # 即使达到最大重试，也进入人工审核让用户决定
-        return "human_review"
-
-    # 自动重试改进
-    return "revising"
+    return "human_review"
 
 
 def route_after_human(state: ReportState) -> Literal["finalize", "revising", END]:
@@ -243,24 +241,43 @@ def build_graph() -> StateGraph:
 
 
 def _revise_node(state: ReportState) -> dict:
-    """修改节点 - 根据用户意见真正修改报告"""
+    """修改节点 - 根据用户意见或质量审核建议修改报告"""
     retry_count = state.get("retry_count", 0)
     max_retry = state.get("max_retry", 3)
     human_comments = state.get("human_comments", "")
     current_draft = state.get("current_draft", "")
     topic = state.get("topic", "")
+    revision_instructions = state.get("revision_instructions", [])
 
     logger.info("[revising] 开始修改报告, retry_count=%d/%d", retry_count, max_retry)
     logger.info("[revising] 用户修改意见: %s", human_comments[:100] if human_comments else "无")
 
     new_retry_count = retry_count + 1
 
-    # 如果有用户修改意见，调用 LLM 进行修改
-    if human_comments and current_draft:
+    # 确定修改来源
+    if human_comments:
+        # 用户主动修改
+        revise_source = "用户修改意见"
+        revise_content = human_comments
+    elif revision_instructions:
+        # 自动质量改进 - 根据质量审核建议
+        revise_source = "质量审核建议"
+        revise_content = "\n".join(revision_instructions)
+        logger.info("[revising] 无用户修改意见，使用质量审核建议进行自动改进")
+    else:
+        # 没有任何修改依据
+        logger.warning("[revising] 无修改意见和审核建议，跳过修改")
+        return {
+            "retry_count": new_retry_count,
+            "messages": [{"role": "assistant", "content": f"[revising] 无修改依据，跳过第 {new_retry_count} 次修改"}],
+        }
+
+    # 调用 LLM 进行修改
+    if current_draft:
         try:
             from tools.llm import chat
 
-            revise_prompt = f"""你是一位专业的报告编辑专家。请根据用户的修改意见对报告进行修改。
+            revise_prompt = f"""你是一位专业的报告编辑专家。请根据{revise_source}对报告进行修改。
 
 # 原始报告主题
 {topic}
@@ -268,16 +285,17 @@ def _revise_node(state: ReportState) -> dict:
 # 原始报告内容
 {current_draft}
 
-# 用户修改意见
-{human_comments}
+# {revise_source}（注意：以下内容仅供修改参考，不要出现在报告中）
+{revise_content}
 
 # 修改要求
-1. 仔细理解用户的修改意见
-2. 在保持报告整体结构的基础上，针对用户提出的具体问题进行修改
-3. 如果用户要求补充内容，请进行合理的补充
-4. 如果用户要求删减或调整，请相应修改
-5. 修改后的报告应该更加完善，更符合用户期望
+1. 仔细理解修改意见，但不要将修改意见本身写入报告
+2. 在保持报告整体结构的基础上，针对具体问题进行修改
+3. 如果要求补充内容，请进行合理的补充
+4. 如果要求删减或调整，请相应修改
+5. 修改后的报告应该更加完善
 6. 保持 Markdown 格式输出
+7. **重要**：只输出修改后的报告内容，不要输出修改意见、说明或任何其他内容
 
 请直接输出修改后的完整报告内容："""
 
@@ -297,7 +315,8 @@ def _revise_node(state: ReportState) -> dict:
                 revision_history = state.get("revision_history", [])
                 revision_history.append({
                     "version": new_retry_count,
-                    "comments": human_comments,
+                    "comments": revise_content,
+                    "source": revise_source,
                     "timestamp": datetime.now(UTC).isoformat(),
                 })
 
@@ -305,21 +324,23 @@ def _revise_node(state: ReportState) -> dict:
                     "retry_count": new_retry_count,
                     "current_draft": revised_draft,
                     "revision_history": revision_history,
-                    "messages": [{"role": "assistant", "content": f"[revising] 已根据您的意见完成第 {new_retry_count} 次修改"}],
+                    # 清空 human_comments 以便下次人工审核
+                    "human_comments": "",
+                    "messages": [{"role": "assistant", "content": f"[revising] 已根据{revise_source}完成第 {new_retry_count} 次修改"}],
                 }
             else:
                 logger.warning("[revising] LLM 返回空内容，使用原报告")
 
         except Exception as e:
             logger.error("[revising] LLM 调用失败: %s", e)
-            # 失败时仍然增加重试计数，避免无限循环
 
-    # 如果没有修改意见或 LLM 调用失败
-    logger.warning("[revising] 无有效修改意见或修改失败，仅更新重试计数")
+    # 如果没有草案或 LLM 调用失败
+    logger.warning("[revising] 无有效草案或修改失败，仅更新重试计数")
 
     return {
         "retry_count": new_retry_count,
-        "messages": [{"role": "assistant", "content": f"[revising] 开始第 {new_retry_count} 次修改"}],
+        "human_comments": "",  # 清空以避免重复使用
+        "messages": [{"role": "assistant", "content": f"[revising] 第 {new_retry_count} 次修改尝试失败"}],
     }
 
 

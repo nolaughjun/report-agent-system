@@ -18,7 +18,7 @@ class TestRevisionNode:
     """报告修改节点测试"""
 
     def test_revise_node_without_comments(self):
-        """测试无修改意见时的行为"""
+        """测试无修改意见但有审核建议时的行为"""
         from graph import _revise_node
 
         state = {
@@ -27,14 +27,40 @@ class TestRevisionNode:
             "human_comments": "",
             "current_draft": "这是一份测试报告",
             "topic": "测试主题",
+            "revision_instructions": ["增加更多细节", "补充数据支撑"],
+        }
+
+        # Mock LLM 调用
+        with patch("tools.llm.chat") as mock_chat:
+            mock_chat.return_value = "这是修改后的报告，增加了更多细节和数据..."
+
+            result = _revise_node(state)
+
+            # 应该增加重试计数
+            assert result["retry_count"] == 1, "应该增加 retry_count"
+            # 有审核建议时应该调用 LLM 修改报告
+            assert "current_draft" in result, "有审核建议时应该修改报告"
+            assert mock_chat.called, "有审核建议时应该调用 LLM"
+
+    def test_revise_node_without_comments_or_instructions(self):
+        """测试无修改意见也无审核建议时的行为"""
+        from graph import _revise_node
+
+        state = {
+            "retry_count": 0,
+            "max_retry": 3,
+            "human_comments": "",
+            "current_draft": "这是一份测试报告",
+            "topic": "测试主题",
+            "revision_instructions": [],  # 空的审核建议
         }
 
         result = _revise_node(state)
 
         # 应该增加重试计数
         assert result["retry_count"] == 1, "应该增加 retry_count"
-        # 无修改意见时不会修改报告
-        assert "current_draft" not in result, "无修改意见时不应该修改报告"
+        # 无修改意见和审核建议时不会修改报告
+        assert "current_draft" not in result, "无修改依据时不应该修改报告"
 
     def test_revise_node_with_comments_calls_llm(self):
         """测试有修改意见时调用 LLM"""
@@ -228,6 +254,62 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
 
 
+class TestAutoRevision:
+    """自动质量改进测试（无用户修改意见时）"""
+
+    def test_auto_revision_with_instructions(self):
+        """测试无用户意见但有审核建议时自动改进"""
+        from graph import _revise_node
+
+        state = {
+            "retry_count": 1,
+            "max_retry": 3,
+            "human_comments": "",  # 无用户修改意见
+            "current_draft": "# 测试报告\n\n内容较少，缺乏数据支撑。",
+            "topic": "测试主题",
+            "revision_instructions": [
+                "问题：内容过于简略",
+                "建议：增加更多数据和分析",
+            ],
+        }
+
+        with patch("tools.llm.chat") as mock_chat:
+            mock_chat.return_value = "# 测试报告\n\n## 概述\n增加了更多内容和分析...\n\n## 数据分析\n补充了具体数据支撑..."
+
+            result = _revise_node(state)
+
+            # 应该调用 LLM 进行自动改进
+            assert mock_chat.called, "有审核建议时应该调用 LLM"
+            assert "current_draft" in result, "应该更新报告"
+            assert result["retry_count"] == 2
+
+            # 验证 LLM 调用使用了审核建议
+            call_args = mock_chat.call_args
+            prompt = call_args[1]["messages"][0]["content"]
+            assert "质量审核建议" in prompt, "应该使用质量审核建议"
+
+    def test_auto_revision_clears_human_comments(self):
+        """测试修改后清空 human_comments 避免重复使用"""
+        from graph import _revise_node
+
+        state = {
+            "retry_count": 0,
+            "max_retry": 3,
+            "human_comments": "",
+            "current_draft": "报告内容",
+            "topic": "主题",
+            "revision_instructions": ["增加细节"],
+        }
+
+        with patch("tools.llm.chat") as mock_chat:
+            mock_chat.return_value = "修改后的报告"
+
+            result = _revise_node(state)
+
+            # 应该清空 human_comments
+            assert result.get("human_comments", "") == "", "应该清空 human_comments"
+
+
 class TestRouteLogic:
     """路由逻辑测试"""
 
@@ -285,31 +367,17 @@ class TestRouteLogic:
         result = route_after_review(state)
         assert result == "human_review", "质量通过应进入人工审核"
 
-    def test_route_after_review_quality_fail_low_retry(self):
-        """测试质量未通过且重试次数未超限，自动改进"""
+    def test_route_after_review_quality_fail_goes_to_human_review(self):
+        """测试质量未通过时进入人工审核等待用户决策"""
         from graph import route_after_review
 
         state = {
             "quality_checks": [{"score": 0.3, "ispass": False}],  # 低于阈值
             "quality_threshold": 0.55,
-            "retry_count": 1,
+            "retry_count": 0,
             "max_retry": 3,
         }
 
         result = route_after_review(state)
-        assert result == "revising", "质量未通过且未达最大重试应自动改进"
-
-    def test_route_after_review_quality_fail_max_retry(self):
-        """测试质量未通过但达到最大重试次数，仍进入人工审核让用户决定"""
-        from graph import route_after_review
-
-        state = {
-            "quality_checks": [{"score": 0.3, "ispass": False}],
-            "quality_threshold": 0.55,
-            "retry_count": 3,  # 达到最大
-            "max_retry": 3,
-        }
-
-        result = route_after_review(state)
-        # 修复后：即使达到最大重试，也进入人工审核
-        assert result == "human_review", "达到最大重试仍应进入人工审核让用户决定"
+        # 质量不达标时，应该进入人工审核等待用户决策
+        assert result == "human_review", "质量未通过应进入人工审核等待用户决策"
